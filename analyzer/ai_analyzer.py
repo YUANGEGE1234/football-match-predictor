@@ -1,0 +1,423 @@
+import requests
+import json
+import time
+
+class AIAnalyzer:
+    def __init__(self, summary_url, summary_key, summary_model, 
+                 analysis_url, analysis_key, analysis_model):
+        self.summary_url = summary_url.rstrip('/')
+        self.summary_key = summary_key
+        self.summary_model = summary_model
+        self.analysis_url = analysis_url.rstrip('/')
+        self.analysis_key = analysis_key
+        self.analysis_model = analysis_model
+        self.max_retries = 3
+        self.retry_delay = 2
+    
+    def _call_llm(self, base_url, api_key, model, system_prompt, user_prompt):
+        url = f"{base_url}/v1/chat/completions"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 4000
+        }
+        
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=120)
+                if response.status_code == 200:
+                    data = response.json()
+                    return data["choices"][0]["message"]["content"]
+                elif response.status_code == 429:
+                    time.sleep(self.retry_delay * (attempt + 1))
+                    continue
+                else:
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay)
+                        continue
+                    return f"API错误: HTTP {response.status_code}"
+            except requests.exceptions.Timeout:
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                return "API超时，请稍后重试"
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                    continue
+                return f"错误: {str(e)}"
+        
+        return "API调用失败，已达最大重试次数"
+    
+    def _format_odds_platforms(self, odds):
+        platforms = odds.get('platforms', {})
+        if not platforms:
+            return "无平台赔率数据"
+        
+        lines = []
+        lines.append(f"{'平台':<15s} {'主胜':<10s} {'平局':<10s} {'客胜':<10s}")
+        lines.append(f"{'-'*45}")
+        
+        for name, vals in platforms.items():
+            home = vals.get('home', 'N/A')
+            draw = vals.get('draw', 'N/A')
+            away = vals.get('away', 'N/A')
+            if home != 'N/A' or draw != 'N/A' or away != 'N/A':
+                lines.append(f"{name:<15s} {home:<10s} {draw:<10s} {away:<10s}")
+        
+        return "\n".join(lines) if len(lines) > 2 else "无可用赔率数据"
+    
+    def summarize_match_data(self, match_details):
+        system_prompt = """你是一位资深的足球数据分析师，拥有20年的足球情报收集和分析经验。你的任务是整理和归纳比赛相关的所有信息，为专业的比赛预测提供最详实的数据支持。
+
+请严格按照以下结构整理信息，不遗漏任何细节：
+
+═══════════════════════════════════════════════════════════════
+一、比赛基本信息
+═══════════════════════════════════════════════════════════════
+- 赛事名称、比赛日期、开球时间
+- 比赛场地、天气条件、温度、风速
+
+═══════════════════════════════════════════════════════════════
+二、主队详细分析
+═══════════════════════════════════════════════════════════════
+1. 球队概况
+   - 阵容状态（已确认/预测）
+   - 预计阵型及战术体系
+
+2. 教练分析
+   - 姓名、国籍、年龄
+   - 执教风格和战术理念
+   - 执教经历和成就
+   - 世界杯/大赛经验
+
+3. 首发阵容分析（逐一列出）
+   - 球员全名、位置、位置全称
+   - 球员状态（健康/存疑/停赛/受伤）
+
+4. 伤病/停赛情况
+   - 缺阵球员及其位置
+   - 对球队的影响程度分析
+
+5. 关键球员
+   - 核心球员及其特点
+   - 近期状态评估
+
+═══════════════════════════════════════════════════════════════
+三、客队详细分析（同上结构）
+═══════════════════════════════════════════════════════════════
+
+═══════════════════════════════════════════════════════════════
+四、裁判分析
+═══════════════════════════════════════════════════════════════
+- 姓名、国籍、年龄
+- 执法经验（世界杯/欧冠/联赛）
+- 执法风格（严格/宽松）
+- 场均黄牌数、场均犯规数
+- 对比赛风格的潜在影响
+
+═══════════════════════════════════════════════════════════════
+五、赔率分析
+═══════════════════════════════════════════════════════════════
+- 主胜/平局/客胜赔率
+- 隐含概率计算
+- 市场倾向分析
+
+═══════════════════════════════════════════════════════════════
+六、天气影响分析
+═══════════════════════════════════════════════════════════════
+- 温度对比赛的影响
+- 风速对传球/射门的影响
+- 降雨对场地的影响
+
+═══════════════════════════════════════════════════════════════
+七、关键影响因素总结
+═══════════════════════════════════════════════════════════════
+列出可能影响比赛结果的所有关键因素"""
+
+        match_info = match_details.get('match_info', {})
+        home_info = match_details.get('home_team_info', {})
+        away_info = match_details.get('away_team_info', {})
+        odds = match_details.get('odds_info', {})
+        weather = match_details.get('weather_info', {})
+        coaches = match_details.get('coach_info', {})
+        referee = match_details.get('referee_info', {})
+        
+        def format_players(players):
+            lines = []
+            for p in players:
+                status = ""
+                if p.get('suspended'):
+                    status = " [停赛]"
+                elif p.get('out'):
+                    status = " [受伤]"
+                elif p.get('doubtful'):
+                    status = " [存疑]"
+                lines.append(f"    {p['position_full']:20s} {p['full_name']}{status}")
+            return "\n".join(lines)
+        
+        def format_injuries(injuries):
+            if not injuries:
+                return "    无缺阵球员"
+            lines = []
+            for p in injuries:
+                lines.append(f"    {p['full_name']} ({p['position_full']}) - {p['injury_status']}")
+            return "\n".join(lines)
+        
+        def format_coach(coach):
+            return f"""    姓名: {coach.get('name', 'N/A')}
+    国籍: {coach.get('nationality', 'N/A')}
+    年龄: {coach.get('age', 'N/A')}
+    风格: {coach.get('style', 'N/A')}
+    经历: {coach.get('experience', 'N/A')}
+    世界杯经验: {coach.get('world_cup_experience', 'N/A')}"""
+        
+        def format_weather(w):
+            if not w or not w.get('available'):
+                return "天气信息暂不可用"
+            return f"""    温度: {w.get('temperature_f', 'N/A')}°F / {w.get('temperature_c', 'N/A')}°C
+    风速: {w.get('wind_mph', 'N/A')} mph / {w.get('wind_kmh', 'N/A')} km/h
+    降雨概率: {w.get('rain_chance', 'N/A')}%
+    影响分析: {w.get('conditions', 'N/A')}"""
+        
+        user_prompt = f"""请整理以下比赛的详细信息：
+
+═══════════════════════════════════════════════════════════════
+比赛信息
+═══════════════════════════════════════════════════════════════
+主队: {match_info.get('home_team', 'N/A')}
+客队: {match_info.get('away_team', 'N/A')}
+日期: {match_info.get('date', 'N/A')}
+时间: {match_info.get('time', 'N/A')}
+联赛: {match_info.get('league', 'N/A')}
+
+═══════════════════════════════════════════════════════════════
+主队信息: {match_info.get('home_team', 'N/A')}
+═══════════════════════════════════════════════════════════════
+阵容状态: {home_info.get('status', 'N/A')}
+阵型: {home_info.get('formation', 'N/A')}
+球员人数: {home_info.get('player_count', 0)}
+可用球员: {home_info.get('available_count', 0)}
+伤病人数: {home_info.get('injury_count', 0)}
+
+教练信息:
+{format_coach(coaches.get('home', {}))}
+
+首发阵容:
+{format_players(home_info.get('players', []))}
+
+伤病/停赛:
+{format_injuries(home_info.get('injuries', []))}
+
+═══════════════════════════════════════════════════════════════
+客队信息: {match_info.get('away_team', 'N/A')}
+═══════════════════════════════════════════════════════════════
+阵容状态: {away_info.get('status', 'N/A')}
+阵型: {away_info.get('formation', 'N/A')}
+球员人数: {away_info.get('player_count', 0)}
+可用球员: {away_info.get('available_count', 0)}
+伤病人数: {away_info.get('injury_count', 0)}
+
+教练信息:
+{format_coach(coaches.get('away', {}))}
+
+首发阵容:
+{format_players(away_info.get('players', []))}
+
+伤病/停赛:
+{format_injuries(away_info.get('injuries', []))}
+
+═══════════════════════════════════════════════════════════════
+裁判信息
+═══════════════════════════════════════════════════════════════
+姓名: {referee.get('name', 'N/A')}
+国籍: {referee.get('nationality', 'N/A')}
+年龄: {referee.get('age', 'N/A')}
+经验: {referee.get('experience', 'N/A')}
+风格: {referee.get('style', 'N/A')}
+场均黄牌: {referee.get('avg_yellows', 'N/A')}
+场均犯规: {referee.get('avg_fouls', 'N/A')}
+世界杯经验: {referee.get('world_cup', 'N/A')}
+
+═══════════════════════════════════════════════════════════════
+赔率信息 (多平台对比)
+═══════════════════════════════════════════════════════════════
+数据来源: {odds.get('source', 'N/A')}
+
+各平台赔率:
+{self._format_odds_platforms(odds)}
+
+最佳赔率:
+  主胜: {odds.get('best_home', 'N/A')} (隐含概率: {odds.get('home_implied_prob', 'N/A')})
+  平局: {odds.get('best_draw', 'N/A')} (隐含概率: {odds.get('draw_implied_prob', 'N/A')})
+  客胜: {odds.get('best_away', 'N/A')} (隐含概率: {odds.get('away_implied_prob', 'N/A')})
+
+═══════════════════════════════════════════════════════════════
+天气信息
+═══════════════════════════════════════════════════════════════
+{format_weather(weather)}
+
+请进行详细的信息整理和归纳。"""
+
+        return self._call_llm(self.summary_url, self.summary_key, self.summary_model, 
+                             system_prompt, user_prompt)
+    
+    def analyze_match(self, summary, match_info):
+        system_prompt = """你是一位世界顶级的足球比赛预测分析师，拥有以下专业背景：
+- 20年职业足球分析经验
+- 曾为欧洲顶级俱乐部提供战术分析
+- 精通各大联赛的战术体系和球员特点
+- 擅长数据建模和概率分析
+- 对世界杯等大赛有深入研究
+
+请基于提供的详细比赛信息，进行专业、深入、全面的比赛预测分析。
+
+你的分析必须包含以下部分，每部分都要有详细的论述和数据支持：
+
+═══════════════════════════════════════════════════════════════
+【第一部分：阵容与战术分析】
+═══════════════════════════════════════════════════════════════
+
+1.1 阵型对比分析
+- 双方阵型的优劣势
+- 阵型之间的克制关系
+- 关键位置的对位分析
+
+1.2 首发阵容评估
+- 各位置球员能力评估
+- 阵容完整度评分（1-10分）
+- 缺阵球员对战术的影响
+
+1.3 战术风格预测
+- 双方可能的进攻策略
+- 防守组织方式
+- 定位球战术
+
+═══════════════════════════════════════════════════════════════
+【第二部分：教练因素分析】
+═══════════════════════════════════════════════════════════════
+
+2.1 教练战术理念
+- 执教风格对比
+- 战术灵活性评估
+- 大赛经验对比
+
+2.2 临场指挥能力
+- 换人策略
+- 战术调整能力
+- 落后/领先时的应对
+
+═══════════════════════════════════════════════════════════════
+【第三部分：关键球员分析】
+═══════════════════════════════════════════════════════════════
+
+3.1 双方核心球员
+- 技术特点分析
+- 近期状态评估
+- 对比赛的影响力
+
+3.2 关键对位
+- 可能决定比赛的球员对决
+- 优势/劣势分析
+
+═══════════════════════════════════════════════════════════════
+【第四部分：裁判与环境因素】
+═══════════════════════════════════════════════════════════════
+
+4.1 裁判影响分析
+- 执法风格对比赛的影响
+- 对不同战术风格的偏好
+- 黄牌/犯规趋势
+
+4.2 天气影响分析
+- 温度对体能的影响
+- 风速对技术发挥的影响
+- 场地条件评估
+
+═══════════════════════════════════════════════════════════════
+【第五部分：数据与概率分析】
+═══════════════════════════════════════════════════════════════
+
+5.1 赔率分析
+- 市场隐含概率解读
+- 赔率变化趋势
+- 价值投注机会
+
+5.2 历史数据参考
+- 双方历史交锋记录
+- 类似对阵情况分析
+
+═══════════════════════════════════════════════════════════════
+【第六部分：风险评估】
+═══════════════════════════════════════════════════════════════
+
+6.1 不确定因素
+- 可能影响比赛结果的意外因素
+- 冷门可能性评估
+
+6.2 预测局限性
+- 数据不足的方面
+- 可能的偏差
+
+═══════════════════════════════════════════════════════════════
+【第七部分：最终预测】
+═══════════════════════════════════════════════════════════════
+
+7.1 胜负预测
+- 主胜概率: XX%
+- 平局概率: XX%
+- 客胜概率: XX%
+
+7.2 比分预测
+- 最可能比分: X:X (概率XX%)
+- 次可能比分: X:X (概率XX%)
+- 第三可能比分: X:X (概率XX%)
+
+7.3 其他预测
+- 总进球数预测: 大/小 X.5球
+- 双方进球预测: 是/否
+- 半场/全场预测
+
+7.4 投注建议（仅供参考）
+- 推荐方向
+- 置信度评分（1-10分）
+
+请确保分析专业、深入、有理有据，充分发挥你的专业能力。"""
+
+        user_prompt = f"""请基于以下详细比赛信息，进行专业的比赛预测分析：
+
+═══════════════════════════════════════════════════════════════
+比赛: {match_info.get('home_team', '主队')} vs {match_info.get('away_team', '客队')}
+日期: {match_info.get('date', '')} {match_info.get('time', '')}
+联赛: {match_info.get('league', '')}
+═══════════════════════════════════════════════════════════════
+
+【详细信息摘要】
+{summary}
+
+请给出你的专业分析和比分预测。"""
+
+        return self._call_llm(self.analysis_url, self.analysis_key, self.analysis_model, 
+                             system_prompt, user_prompt)
+    
+    def predict_match(self, match_details, weather_data):
+        summary = self.summarize_match_data(match_details)
+        
+        analysis = self.analyze_match(summary, match_details.get('match_info', {}))
+        
+        return {
+            "summary": summary,
+            "analysis": analysis,
+            "match_info": match_details.get('match_info', {}),
+            "odds": match_details.get('odds_info', {}),
+        }
