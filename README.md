@@ -73,7 +73,7 @@ pyinstaller --onefile --windowed --name "足球比赛预测工具" main.py
 
 如果你无法直接访问OpenAI API，推荐使用以下中转站：
 
-**新源AI中转站**: https://xinyuanai666.com
+**鑫源AI中转站**: https://xinyuanai666.com
 
 - 支持OpenAI兼容接口
 - 稳定快速
@@ -82,12 +82,12 @@ pyinstaller --onefile --windowed --name "足球比赛预测工具" main.py
 ### 归纳模型配置
 - **API地址**: 推荐使用 https://xinyuanai666.com 或 https://api.openai.com
 - **API密钥**: 在中转站获取的API密钥
-- **模型**: 推荐使用 gpt-3.5-turbo 或同等模型
+- **模型**: 推荐使用 gpt-5.5 或同等模型
 
 ### 分析模型配置
 - **API地址**: 推荐使用 https://xinyuanai666.com 或 https://api.openai.com
 - **API密钥**: 在中转站获取的API密钥
-- **模型**: 推荐使用 gpt-4 或更强大的模型
+- **模型**: 推荐使用 gpt-5.5 或更强大的模型
 
 ### 天气API（可选）
 - 免费获取：https://openweathermap.org/api
